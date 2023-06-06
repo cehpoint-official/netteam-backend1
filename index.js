@@ -2,6 +2,7 @@ const express = require("express");
 const http = require("http");
 const { Server } = require("socket.io");
 const { v4: uuidv4 } = require("uuid");
+const cors = require("cors");
 require("dotenv").config();
 
 const app = express();
@@ -13,6 +14,8 @@ const activeConnections = {};
 
 // Serve the static files
 app.use(express.static("public"));
+
+app.use(cors({ origin: process.env.CLIENT_URL }));
 
 // Generate unique room ID
 app.get("/", (req, res) => {
