@@ -1,0 +1,28 @@
+{
+  "name": "netteam-call-backend",
+  "version": "1.0.0",
+  "description": "��#\u0000 \u0000n\u0000e\u0000t\u0000t\u0000e\u0000a\u0000m\u0000-\u0000b\u0000a\u0000c\u0000k\u0000e\u0000n\u0000d\u0000\r\u0000 \u0000",
+  "main": "index.js",
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/dkk3675/netteam-backend.git"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "bugs": {
+    "url": "https://github.com/dkk3675/netteam-backend/issues"
+  },
+  "homepage": "https://github.com/dkk3675/netteam-backend#readme",
+  "dependencies": {
+    "express": "^4.18.2",
+    "http": "^0.0.1-security",
+    "node": "^20.2.0",
+    "nodemon": "^2.0.22",
+    "socket.io": "^4.6.2",
+    "uuid": "^9.0.0"
+  }
+}
