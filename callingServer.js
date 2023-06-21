@@ -94,6 +94,7 @@ io.on("connection", (socket) => {
 
   // Handle disconnection
   socket.on("disconnect", () => {
+    availableUsers.delete(socket.id);
     const roomId = socket.data.roomId;
     if (roomId) {
       socket.to(roomId).emit("hangup");
