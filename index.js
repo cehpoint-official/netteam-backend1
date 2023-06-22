@@ -119,6 +119,10 @@ io.on("connection", (socket) => {
   socket.emit("create", userId);
   console.log(`${socket.id} connected`);
 
+  socket.on("reConnect", () => {
+    availableUsers.set(socket.id, userId);
+  });
+
   socket.on("startChat", () => {
     if (availableUsers.size < 2) {
       socket.emit("chatError", "Waiting for another user to join...");
