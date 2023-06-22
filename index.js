@@ -184,6 +184,16 @@ io.on("connection", (socket) => {
     });
   });
 
+  socket.on("ask-increment", () => {
+    const roomId = socket.data.roomId;
+    socket.to(roomId).emit("ask-increment");
+  });
+
+  socket.on("reply-increment", (data) => {
+    const roomId = socket.data.roomId;
+    socket.to(roomId).emit("reply-increment",data);
+  });
+
   // Handle disconnection
   socket.on("disconnect", () => {
     availableUsers.delete(socket.id);
