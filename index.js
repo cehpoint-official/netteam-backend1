@@ -7,13 +7,18 @@ const { Server } = require("socket.io");
 const uuid = require("uuid");
 const mongoose = require("mongoose");
 const multer = require("multer");
-// const ffmpeg = require("ffmpeg");
 const { exec } = require("child_process");
 require("dotenv").config();
 
 const app = express();
 const server = http.createServer(app);
 const io = new Server(server);
+
+// Serve the static files
+app.use(express.static("public"));
+app.use(cors({ origin: process.env.CLIENT_URL }));
+app.use(express.json());
+
 
 // Set up MongoDB connection
 mongoose.connect(process.env.MONGODB_URI, {
@@ -32,16 +37,89 @@ const videoSchema = new mongoose.Schema({
 
 const Video = mongoose.model("Video", videoSchema);
 
+
+const loginSchema = new mongoose.Schema({
+  userId: String,
+  password: String,
+  tokens: { type: Number, default: 5 },
+});
+
+const Login = mongoose.model("Login", loginSchema);
+
+app.post("/login", async (req, res) => {
+  try {
+    const { userId, password } = req.body;
+
+    // Find a document where userId and password match
+    const login = await Login.findOne({ userId, password });
+
+    if (login) {
+      res.status(200).json(login);
+    } else {
+      res.status(404).json({ message: "Login not found" });
+    }
+  } catch (error) {
+    res.status(500).json({ message: "Error retrieving login" });
+  }
+});
+
+app.post("/getTokens", async (req, res) => {
+  try {
+    const { _id } = req.body;
+    const getToken = await Login.findOne({ _id });
+    if (getToken) {
+      res.status(200).json(getToken["tokens"]);
+    } else {
+      res.status(404).json({ message: "Tokens not found" });
+    }
+  } catch (error) {
+    res.status(500).json({ message: "Error retreiving Tokens" });
+  }
+});
+
+app.post("/updateTokens", async (req, res) => {
+  try {
+    const { _id,tokens } = req.body;
+    const updateToken = await Login.updateOne({ _id }, { tokens });
+    if (updateToken) {
+      res.status(200).json({ message: "Tokens updated successfully" });
+    } else {
+      res.status(404).json({ message: "Tokens not updated" });
+    }
+  } catch (error) {
+    res.status(500).json({ message: "Error updating Tokens" });
+  }
+});
+
+
+app.post("/signup", async (req, res) => {
+  try {
+    const { userId, password } = req.body;
+
+    // Check if the user already exists
+    const existingUser = await Login.findOne({ userId });
+
+    if (existingUser) {
+      res.status(409).json({ message: "User already exists" });
+    } else {
+      // Create a new user
+      const newUser = new Login({ userId, password });
+
+      // Save the new user to the database
+      await newUser.save();
+
+      res.status(201).json({ message: "User created successfully" });
+    }
+  } catch (error) {
+    res.status(500).json({ message: "Error creating user" });
+  }
+});
+
+
 // Store the active connections
 const availableUsers = new Map();
 
-// Serve the static files
-app.use(express.static("public"));
-app.use(cors({ origin: process.env.CLIENT_URL }));
-app.use(express.json());
-
 const upload = multer({ dest: "uploads/" });
-
 app.use("/uploads", express.static(path.join(__dirname, "uploads")));
 
 // Upload endpoint to save videos
@@ -188,10 +266,16 @@ io.on("connection", (socket) => {
     });
   });
 
-  socket.on("ask-increment", () => {
+  socket.on("message", (data) => {
     const roomId = socket.data.roomId;
-    socket.to(roomId).emit("ask-increment");
+    socket.to(roomId).emit("message", data);
   });
+
+   socket.on("ask-increment", () => {
+     const roomId = socket.data.roomId;
+     socket.to(roomId).emit("ask-increment");
+   });
+
 
   socket.on("reply-increment", (data) => {
     const roomId = socket.data.roomId;
