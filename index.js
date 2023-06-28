@@ -39,8 +39,10 @@ const Video = mongoose.model("Video", videoSchema);
 
 
 const loginSchema = new mongoose.Schema({
+  name: String,
   userId: String,
   password: String,
+  interests: { type: Array, default: [] },
   tokens: { type: Number, default: 5 },
 });
 
@@ -91,10 +93,38 @@ app.post("/updateTokens", async (req, res) => {
   }
 });
 
+app.post("/storeInterests", async (req, res) => {
+  try {
+    const { _id, interests } = req.body;
+    const addInterests = await Login.updateOne({ _id }, { interests });
+    if (addInterests) {
+      res.status(200).json({ message: "Interests updated successfully" });
+    } else {
+      res.status(404).json({ message: "Interests not updated" });
+    }
+  } catch (error) {
+    res.status(500).json({ message: "Error updating Interests" });
+  }
+});
+
+app.post("/getInterests", async (req, res) => {
+  try {
+    const { _id } = req.body;
+    const getInterests = await Login.findOne({ _id });
+    if (getInterests) {
+      res.status(200).json(getInterests["interests"]);
+    } else {
+      res.status(404).json({ message: "Interests not found" });
+    }
+  } catch (error) {
+    res.status(500).json({ message: "Error retreiving Interests" });
+  }
+});
+
 
 app.post("/signup", async (req, res) => {
   try {
-    const { userId, password } = req.body;
+    const { name,userId,password } = req.body;
 
     // Check if the user already exists
     const existingUser = await Login.findOne({ userId });
@@ -103,21 +133,19 @@ app.post("/signup", async (req, res) => {
       res.status(409).json({ message: "User already exists" });
     } else {
       // Create a new user
-      const newUser = new Login({ userId, password });
+      const newUser = new Login({ name,userId,password });
 
       // Save the new user to the database
       await newUser.save();
 
-      res.status(201).json({ message: "User created successfully" });
+      const userData = await Login.findOne({ userId });
+
+      res.status(200).json({ message: "User created successfully", _id: userData["_id"] });
     }
   } catch (error) {
     res.status(500).json({ message: "Error creating user" });
   }
 });
-
-
-// Store the active connections
-const availableUsers = new Map();
 
 const upload = multer({ dest: "uploads/" });
 app.use("/uploads", express.static(path.join(__dirname, "uploads")));
@@ -187,54 +215,69 @@ app.get("/reels", async (req, res) => {
   }
 });
 
+function matchSockets(socket) {
+  if (availableUsers.size < 2) {
+    socket.emit("chatError", "Waiting for another user to join...");
+    return;
+  }
+
+  const myInterests = availableUsers.get(socket.id);
+
+  // Remove the current user from the available users map
+  availableUsers.delete(socket.id);
+
+  // Find a matching user
+  const match = [...availableUsers.entries()]
+  .find(([_, interests]) => {
+    return interests.some((interest) => myInterests.includes(interest));
+  });
+
+  if (!match) {
+    // No user with similar interests found, recursively call matchSockets again
+    matchSockets(socket);
+    return;
+  }
+
+  const [otherSocketId, otherUserInterests] = match;
+
+  // Remove the selected user from the available users map
+  availableUsers.delete(otherSocketId);
+
+  // Create a chat room or session
+  const roomId = uuid.v4();
+
+  // Store the room ID in the sockets' custom properties for later use
+  socket.data.roomId = roomId;
+  const otherSocket = io.sockets.sockets.get(otherSocketId);
+  otherSocket.data.roomId = roomId;
+
+  socket.join(roomId);
+  otherSocket.join(roomId);
+
+  // Notify the users about the match and the room ID
+  socket.emit("chatMatched", {
+    roomId: roomId,
+    to: otherSocketId,
+  });
+}
+
+// Store the active connections
+const availableUsers = new Map();
+
 // Handle socket.io connections
 io.on("connection", (socket) => {
-  const userId = uuid.v4();
 
-  // Store the user's socket connection
-  availableUsers.set(socket.id, userId);
-
-  socket.emit("create", userId);
+  socket.emit("create", socket.id);
   console.log(`${socket.id} connected`);
 
-  socket.on("reConnect", () => {
-    availableUsers.set(socket.id, userId);
+  // Store the user's socket connection
+  socket.on("reConnect", (interests) => {
+    // console.log(interests.data);
+    availableUsers.set(socket.id, interests.data);
   });
 
   socket.on("startChat", () => {
-    if (availableUsers.size < 2) {
-      socket.emit("chatError", "Waiting for another user to join...");
-      return;
-    }
-    const currentUserId = availableUsers.get(socket.id);
-
-    // Remove the current user from the available users map
-    availableUsers.delete(socket.id);
-
-    // Select a random user from the available users map
-    const [otherSocketId, otherUserId] = [...availableUsers.entries()][0];
-
-    // Remove the selected user from the available users map
-    availableUsers.delete(otherSocketId);
-    // console.log(`this is other socket ${otherSocketId}`);
-
-    // Create a chat room or session
-    const roomId = uuid.v4();
-
-    // Store the room ID in the sockets' custom properties for later use
-    socket.data.roomId = roomId;
-    const otherSocket = io.sockets.sockets.get(otherSocketId);
-    otherSocket.data.roomId = roomId;
-    // console.log(`this is other socket ${otherSocket.data.roomId}`);
-
-    socket.join(roomId);
-    otherSocket.join(roomId);
-
-    // Notify the users about the match and the room ID
-    socket.emit("chatMatched", {
-      roomId: roomId,
-      to: otherSocketId,
-    });
+    matchSockets(socket);
   });
 
   // Handle offer signaling
