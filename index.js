@@ -325,6 +325,30 @@ io.on("connection", (socket) => {
     socket.to(roomId).emit("reply-increment",data);
   });
 
+  socket.on("ask-chat", () => {
+    const roomId = socket.data.roomId;
+    socket.to(roomId).emit("ask-chat");
+  });
+
+  socket.on("reply-chat", (data) => {
+    const roomId = socket.data.roomId;
+    socket.to(roomId).emit("reply-chat", data);
+  });
+
+  socket.on("close-chat", () => {
+    const roomId = socket.data.roomId;
+    socket.to(roomId).emit("close-chat");
+  });
+
+  socket.on("ask-exchange-numbers", () => {
+    const roomId = socket.data.roomId;
+    socket.to(roomId).emit("ask-exchange-numbers");
+  });
+  socket.on("reply-exchange-numbers", (data) => {
+    const roomId = socket.data.roomId;
+    socket.to(roomId).emit("reply-exchange-numbers", data);
+  });
+
   // Handle disconnection
   socket.on("disconnect", () => {
     availableUsers.delete(socket.id);
