@@ -1,7 +1,0 @@
-version = 2
-
-[env]
-RAILWAY_INSTALL_CMD = '''
-apt-get update
-apt-get install -y ffmpeg
-'''
