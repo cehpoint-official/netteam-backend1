@@ -6,8 +6,12 @@ const http = require("http");
 const { Server } = require("socket.io");
 const uuid = require("uuid");
 const mongoose = require("mongoose");
+const { ObjectId } = require("mongodb");
 const multer = require("multer");
 const { exec } = require("child_process");
+const nodemailer = require("nodemailer");
+const otpGenerator = require("otp-generator");
+const paypal = require("paypal-rest-sdk");
 require("dotenv").config();
 
 const app = express();
@@ -19,7 +23,6 @@ app.use(express.static("public"));
 app.use(cors({ origin: process.env.CLIENT_URL }));
 app.use(express.json());
 
-
 // Set up MongoDB connection
 mongoose.connect(process.env.MONGODB_URI, {
   useNewUrlParser: true,
@@ -28,25 +31,190 @@ mongoose.connect(process.env.MONGODB_URI, {
 
 // Create a video schema and model
 const videoSchema = new mongoose.Schema({
-  title: String,
+  author: String,
   description: String,
   videoUrl: String,
   thumbnailUrl: String,
+  likes: { type: Array, default: [] },
+  comments: { type: Array, default: [] },
+  saved: { type: Array, default: [] },
   createdAt: { type: Date, default: Date.now },
 });
 
 const Video = mongoose.model("Video", videoSchema);
 
-
 const loginSchema = new mongoose.Schema({
   name: String,
   userId: String,
+  fancyId: String,
   password: String,
   interests: { type: Array, default: [] },
   tokens: { type: Number, default: 5 },
+  posts: { type: Array, default: [] },
+  saved: { type: Array, default: [] },
+  followers: { type: Array, default: [] },
+  following: { type: Array, default: [] },
+  socialId: { type: String, default: "" },
+  live: { type: Boolean, default: false },
 });
 
 const Login = mongoose.model("Login", loginSchema);
+
+const messageSchema = new mongoose.Schema({
+  from: String,
+  to: String,
+  message: String,
+  seen: { type: Boolean, default: false },
+});
+
+const Message = mongoose.model("Message", messageSchema);
+
+app.post("/sendMessage", async (req, res) => {
+  try {
+    const { from, to, message } = req.body;
+    const newMessage = new Message({ from, to, message });
+    await newMessage.save();
+    res.status(200).json({ message: "Message sent successfully" });
+  } catch (error) {
+    res.status(500).json({ message: "Error sending message" });
+  }
+});
+
+app.post("/retriveMessage", async (req, res) => {
+  try {
+    const { from, to } = req.body;
+    const messages = await Message.find({
+      $or: [
+        { from: from, to: to },
+        { from: to, to: from },
+      ],
+    });
+    await Message.updateMany(
+      {
+        from: to,
+        to: from,
+      },
+      {
+        seen: true,
+      }
+    );
+    // console.log(messages);
+    res.status(200).json(messages);
+  } catch (error) {
+    res.status(500).json({ message: "Error retriving message" });
+  }
+});
+
+app.post("/usersAndUnseenChatsAndLastMessage", async (req, res) => {
+  try {
+    const { userId } = req.body;
+    const pipeline = [
+      {
+        $match: {
+          $or: [{ to: userId }, { from: userId }],
+        },
+      },
+      {
+        $sort: {
+          _id: -1,
+        },
+      },
+      {
+        $group: {
+          _id: {
+            $cond: [{ $eq: ["$from", userId] }, "$to", "$from"],
+          },
+          unseenCount: {
+            $sum: {
+              $cond: [{ $eq: ["$to", userId] }, { $cond: ["$seen", 0, 1] }, 0],
+            },
+          },
+          lastMessage: {
+            $first: "$message",
+          },
+        },
+      },
+    ];
+
+    const chattedUsers = await Message.aggregate(pipeline);
+
+    // Get an array of unique user IDs from the chattedUsers result
+    const userIds = chattedUsers.map((user) => user._id);
+
+    // Fetch the corresponding user details from the Login collection
+    const userNames = await Login.find({ _id: { $in: userIds } }, "name");
+
+    // Create a map of userId to userName for faster lookup
+    const userNameMap = new Map();
+    userNames.forEach((user) =>
+      userNameMap.set(user._id.toString(), user.name)
+    );
+
+    // Merge the userName into the chattedUsers result
+    const chattedUsersWithNames = chattedUsers.map((user) => ({
+      _id: user._id,
+      name: userNameMap.get(user._id.toString()) || "Deleted User",
+      unseenCount: user.unseenCount,
+      lastMessage: user.lastMessage,
+    }));
+
+    // console.log(chattedUsersWithNames);
+    res.status(200).json(chattedUsersWithNames);
+  } catch (error) {
+    res.status(500).json({ message: "Error retriving Last chat & info" });
+  }
+});
+
+app.post("/getPostsAndSaved", async (req, res) => {
+  try {
+    const { userId, reqId } = req.body;
+    const Info = await Login.findOne({ _id: userId });
+    const posts = Info.posts;
+    const saved = Info.saved;
+    const followers = Info.followers;
+    const following = Info.following;
+
+    const postsInfo = await Promise.all(
+      posts.map(async (post) => {
+        const video = await Video.findById(post);
+        return video;
+      })
+    );
+
+    const savedInfo = await Promise.all(
+      saved.map(async (save) => {
+        const video = await Video.findById(save);
+        return video;
+      })
+    );
+
+    const followersInfo = await Promise.all(
+      followers.map(async (follower) => {
+        const user = await Login.findById(follower);
+        return {
+          followerId: follower,
+          followerName: user.fancyId,
+          following: user.followers.includes(reqId),
+        };
+      })
+    );
+
+    const followingInfo = await Promise.all(
+      following.map(async (follow) => {
+        const user = await Login.findById(follow);
+        return {
+          followingId: follow,
+          followingName: user.fancyId,
+          following: user.followers.includes(reqId),
+        };
+      })
+    );
+
+    res.status(200).json({ postsInfo, savedInfo, followersInfo, followingInfo });
+  } catch (error) {
+    res.status(500).json({ message: "Error retriving Last chat & info" });
+  }
+});
 
 app.post("/login", async (req, res) => {
   try {
@@ -81,8 +249,8 @@ app.post("/getTokens", async (req, res) => {
 
 app.post("/updateTokens", async (req, res) => {
   try {
-    const { _id,tokens } = req.body;
-    const updateToken = await Login.updateOne({ _id }, { tokens });
+    const { _id, tokens } = req.body;
+    const updateToken = await Login.updateOne({ _id }, { $inc: { tokens } });
     if (updateToken) {
       res.status(200).json({ message: "Tokens updated successfully" });
     } else {
@@ -121,10 +289,9 @@ app.post("/getInterests", async (req, res) => {
   }
 });
 
-
 app.post("/signup", async (req, res) => {
   try {
-    const { name,userId,password } = req.body;
+    const { name, userId, password } = req.body;
 
     // Check if the user already exists
     const existingUser = await Login.findOne({ userId });
@@ -133,14 +300,17 @@ app.post("/signup", async (req, res) => {
       res.status(409).json({ message: "User already exists" });
     } else {
       // Create a new user
-      const newUser = new Login({ name,userId,password });
+      const fancyId = userId.split("@")[0];
+      const newUser = new Login({ name, userId, password, fancyId });
 
       // Save the new user to the database
       await newUser.save();
 
       const userData = await Login.findOne({ userId });
 
-      res.status(200).json({ message: "User created successfully", _id: userData["_id"] });
+      res
+        .status(200)
+        .json({ message: "User created successfully", _id: userData["_id"] });
     }
   } catch (error) {
     res.status(500).json({ message: "Error creating user" });
@@ -153,7 +323,7 @@ app.use("/uploads", express.static(path.join(__dirname, "uploads")));
 // Upload endpoint to save videos
 app.post("/upload", upload.single("video"), async (req, res) => {
   try {
-    const { title, description } = req.body;
+    const { author, description } = req.body;
     const inputUrl = req.file.path;
     const thumbnailUrl = req.file.path + "-thumbnail.jpg";
     const videoUrl = req.file.path + "-720p.mp4";
@@ -178,14 +348,19 @@ app.post("/upload", upload.single("video"), async (req, res) => {
 
         // Create a new video instance
         const newVideo = new Video({
-          title,
+          author,
           description,
           videoUrl,
           thumbnailUrl,
         });
 
         // Save the video to the database
-        await newVideo.save();
+        const savedVideo = await newVideo.save();
+
+        await Login.updateOne(
+          { _id: author },
+          { $push: { posts: savedVideo._id } }
+        );
 
         res.status(201).json({ message: "Video uploaded successfully" });
 
@@ -203,15 +378,142 @@ app.post("/upload", upload.single("video"), async (req, res) => {
   }
 });
 
-// Retrieve latest five videos and display as reels
-app.get("/reels", async (req, res) => {
+app.post("/reels", async (req, res) => {
   try {
-    // Retrieve the latest five videos from the database
-    const videos = await Video.find().sort({ createdAt: -1 }).limit(2);
+    const { userId } = req.body;
+    // Fetch all videos from the database
+    const videos = await Video.find().sort({ createdAt: -1 });
 
-    res.status(200).json(videos);
+    // Prepare the response with additional information
+    const reelsWithInfo = await Promise.all(
+      videos.map(async (video) => {
+        const authorName = await getAuthorName(video.author);
+        const likedStatus = await isVideoLikedByUser(video._id, userId);
+        const likesCount = video.likes.length;
+        const commentsCount = video.comments.length;
+        const savedStatus = await isVideoSavedByUser(video._id, userId);
+        const savedByCount = video.saved.length;
+
+        return {
+          ...video.toObject(),
+          authorName,
+          likedStatus,
+          likesCount,
+          commentsCount,
+          savedStatus,
+          savedByCount,
+        };
+      })
+    );
+    res.status(200).json(reelsWithInfo);
   } catch (error) {
-    res.status(500).json({ message: "Error retrieving reels" });
+    res.status(500).json({ error: "Internal server error" });
+  }
+});
+
+// Helper functions to get additional information
+async function getAuthorName(authorId) {
+  const login = await Login.findOne({ _id: authorId });
+  return login ? login.fancyId : "Unknown";
+}
+
+async function isVideoLikedByUser(videoId, userId) {
+  const video = await Video.findById(videoId);
+  return video.likes.includes(userId);
+}
+
+async function isVideoSavedByUser(videoId, userId) {
+  const video = await Video.findById(videoId);
+  return video.saved.includes(userId);
+}
+
+app.post("/like", async (req, res) => {
+  try {
+    const { videoId, userId, likedStatus } = req.body;
+    if (likedStatus) {
+      await Video.updateOne({ _id: videoId }, { $pull: { likes: userId } });
+    } else {
+      await Video.updateOne({ _id: videoId }, { $push: { likes: userId } });
+    }
+
+    res.status(200).json({ message: "Video liked/disliked successfully" });
+  } catch (error) {
+    res.status(500).json({ message: "Error liking/disliking video" });
+  }
+});
+
+app.post("/save", async (req, res) => {
+  try {
+    const { videoId, userId, savedStatus } = req.body;
+    if (savedStatus) {
+      await Video.updateOne({ _id: videoId }, { $pull: { saved: userId } });
+      await Login.updateOne({ _id: userId }, { $pull: { saved: videoId } });
+    } else {
+      await Video.updateOne({ _id: videoId }, { $push: { saved: userId } });
+      await Login.updateOne({ _id: userId }, { $push: { saved: videoId } });
+    }
+
+    res.status(200).json({ message: "Video saved/unsaved successfully" });
+  } catch (error) {
+    res.status(500).json({ message: "Error saving/unsaving video" });
+  }
+});
+
+app.post("/likeComment", async (req, res) => {
+  try {
+    const { videoId, commentId, userId, likedStatus } = req.body;
+    if (likedStatus) {
+      await Video.updateOne(
+        { _id: videoId, "comments._id": new ObjectId(commentId) },
+        { $pull: { "comments.$.likes": userId } }
+      );
+    } else {
+      await Video.updateOne(
+        { _id: videoId, "comments._id": new ObjectId(commentId) },
+        { $push: { "comments.$.likes": userId } }
+      );
+    }
+    res.status(200).json({ message: "Comment liked/disliked successfully" });
+  } catch (error) {
+    res.status(500).json({ message: "Error liking/disliking comment" });
+  }
+});
+
+app.post("/getComments", async (req, res) => {
+  try {
+    const { videoId, userId } = req.body;
+    const video = await Video.findById(videoId);
+    const comments = video.comments;
+    const commentsWithInfo = await Promise.all(
+      comments.map(async (comment) => {
+        const authorName = await getAuthorName(comment.author);
+        const likedStatus = await comment.likes.includes(userId);
+        const likesCount = comment.likes.length;
+        return {
+          ...comment,
+          authorName,
+          likedStatus,
+          likesCount,
+        };
+      })
+    );
+    res.status(200).json(commentsWithInfo);
+  } catch (error) {
+    res.status(500).json({ message: "Error retrieving comments" });
+  }
+});
+
+app.post("/postComment", async (req, res) => {
+  try {
+    const { videoId, author, comment } = req.body;
+    const id = new ObjectId();
+    await Video.updateOne(
+      { _id: videoId },
+      { $push: { comments: { _id: id, author, comment, likes: [] } } }
+    );
+    res.status(200).json(id);
+  } catch (error) {
+    res.status(500).json({ message: "Error posting comment" });
   }
 });
 
@@ -227,8 +529,7 @@ function matchSockets(socket) {
   availableUsers.delete(socket.id);
 
   // Find a matching user
-  const match = [...availableUsers.entries()]
-  .find(([_, interests]) => {
+  const match = [...availableUsers.entries()].find(([_, interests]) => {
     return interests.some((interest) => myInterests.includes(interest));
   });
 
@@ -266,7 +567,6 @@ const availableUsers = new Map();
 
 // Handle socket.io connections
 io.on("connection", (socket) => {
-
   socket.emit("create", socket.id);
   console.log(`${socket.id} connected`);
 
@@ -314,25 +614,26 @@ io.on("connection", (socket) => {
     socket.to(roomId).emit("message", data);
   });
 
-   socket.on("ask-increment", () => {
-     const roomId = socket.data.roomId;
-     socket.to(roomId).emit("ask-increment");
-   });
-
+  socket.on("ask-increment", () => {
+    const roomId = socket.data.roomId;
+    socket.to(roomId).emit("ask-increment");
+  });
 
   socket.on("reply-increment", (data) => {
     const roomId = socket.data.roomId;
-    socket.to(roomId).emit("reply-increment",data);
+    socket.to(roomId).emit("reply-increment", data);
   });
 
-  socket.on("ask-chat", () => {
+  socket.on("ask-chat", (data) => {
     const roomId = socket.data.roomId;
-    socket.to(roomId).emit("ask-chat");
+    const allData = JSON.parse(data);
+    socket.to(roomId).emit("ask-chat", allData);
   });
 
   socket.on("reply-chat", (data) => {
     const roomId = socket.data.roomId;
-    socket.to(roomId).emit("reply-chat", data);
+    const allData = JSON.parse(data);
+    socket.to(roomId).emit("reply-chat", allData);
   });
 
   socket.on("close-chat", () => {
@@ -361,6 +662,228 @@ io.on("connection", (socket) => {
     }
     console.log(`${socket.id} disconnected`);
   });
+});
+
+// forgotPassword
+app.post("/verify-email", async (req, res) => {
+  const { userId } = req.body;
+  const existingUser = await Login.findOne({ userId });
+  if (existingUser) {
+    res.status(200).json({ message: true });
+    return;
+  }
+  res.status(404).json({ message: false });
+});
+
+app.post("/change-password", async (req, res) => {
+  try {
+    const { userId, password } = req.body;
+    const updatePassword = await Login.updateOne({ userId }, { password });
+    if (updatePassword) {
+      res.status(200).json({ message: "Password changed successfully" });
+    } else {
+      res.status(404).json({ message: "Password not changed" });
+    }
+  } catch (error) {
+    res.status(500).json({ message: "Error changing Password" });
+  }
+});
+
+// Create a transporter using Gmail SMTP configuration
+const transporter = nodemailer.createTransport({
+  host: "smtp.gmail.com",
+  port: 465,
+  secure: true,
+  auth: {
+    user: process.env.EMAIL,
+    pass: process.env.APP_PASSWORD,
+  },
+});
+
+// Handle POST request to verify email and send OTP
+app.post("/send-email", (req, res) => {
+  const { email } = req.body;
+
+  // Generate OTP
+  const otp = otpGenerator.generate(4, {
+    digits: true,
+    alphabets: false,
+    upperCase: false,
+    specialChars: false,
+  });
+
+  // Compose the email message
+  const mailOptions = {
+    from: `NetTeam Support <${process.env.EMAIL}>`,
+    to: email,
+    subject: "Email Verification",
+    text: `Your OTP is: ${otp}`,
+  };
+
+  // Send the email
+  transporter.sendMail(mailOptions, (error, info) => {
+    if (error) {
+      console.log("Error:", error);
+      res
+        .status(500)
+        .json({ error: "An error occurred while sending the email" });
+    } else {
+      console.log("Email sent:", info.response);
+      res.status(200).json(otp);
+    }
+  });
+});
+// forgot password
+
+// SUPERCHAT
+// PayPal configuration
+paypal.configure({
+  mode: "sandbox", // Set 'live' for production mode
+  client_id: process.env.PAYPAL_CLIENT_ID,
+  client_secret: process.env.PAYPAL_CLIENT_SECRET,
+});
+
+// Payment endpoint
+app.post("/payment", (req, res) => {
+  const paymentAmount = req.body.amount; // Amount received from frontend
+
+  const create_payment_json = {
+    intent: "sale",
+    payer: {
+      payment_method: "paypal",
+    },
+    transactions: [
+      {
+        amount: {
+          total: paymentAmount.toFixed(2),
+          currency: "USD",
+        },
+      },
+    ],
+    redirect_urls: {
+      return_url: process.env.PAYPAL_RETURN_URL,
+      cancel_url: process.env.PAYPAL_CANCEL_URL,
+    },
+  };
+
+  paypal.payment.create(create_payment_json, (error, payment) => {
+    if (error) {
+      res
+        .status(500)
+        .json({ status: "error", message: "Payment creation failed" });
+    } else {
+      for (let i = 0; i < payment.links.length; i++) {
+        if (payment.links[i].rel === "approval_url") {
+          res.json({ status: "created", approvalUrl: payment.links[i].href });
+        }
+      }
+    }
+  });
+});
+
+// Payment confirmation endpoint
+app.get("/payment/confirm", (req, res) => {
+  const payerId = req.query.PayerID;
+  const paymentId = req.query.paymentId;
+
+  const execute_payment_json = {
+    payer_id: payerId,
+  };
+
+  paypal.payment.execute(paymentId, execute_payment_json, (error, payment) => {
+    if (error) {
+      res
+        .status(500)
+        .json({ status: "error", message: "Payment execution failed" });
+    } else {
+      res.json({ status: "success", message: "Payment successful" });
+    }
+  });
+});
+// Supercht end
+
+app.post("/updateName", async (req, res) => {
+  try {
+    const { _id, name } = req.body;
+    await Login.updateOne({ _id }, { name });
+    res.status(200).json({ message: "Name updated successfully" });
+  } catch (error) {
+    res.status(500).json({ message: "Error updating Name" });
+  }
+});
+
+app.post("/updateFancyId", async (req, res) => {
+  try {
+    const { _id, fancyId } = req.body;
+    await Login.updateOne({ _id }, { fancyId });
+    res.status(200).json({ message: "FancyId updated successfully" });
+  } catch (error) {
+    res.status(500).json({ message: "Error updating FancyId" });
+  }
+});
+
+app.post("/updateEmail", async (req, res) => {
+  try {
+    const { _id, userId } = req.body;
+    await Login.updateOne({ _id }, { userId });
+    res.status(200).json({ message: "Email updated successfully" });
+  } catch (error) {
+    res.status(500).json({ message: "Error updating Email" });
+  }
+});
+
+app.post("/updateSocial", async (req, res) => {
+  try {
+    const { _id, socialId } = req.body;
+    await Login.updateOne({ _id }, { socialId });
+    res.status(200).json({ message: "Email updated successfully" });
+  } catch (error) {
+    res.status(500).json({ message: "Error updating Email" });
+  }
+});
+
+app.post("/getAllUsers", async (req, res) => {
+  try {
+    const { _id } = req.body;
+    const users = await Login.find({ _id: { $ne: _id } });
+    const updatedUsers = users.map((user) => ({
+      ...user._doc,
+      following: user.followers.includes(_id),
+    }));
+    res.status(200).json(updatedUsers);
+  } catch (error) {
+    res.status(500).json({ message: "Error getting all users" });
+  }
+});
+
+app.post("/getUserProfile", async (req, res) => {
+  try {
+    const { _id, reqId } = req.body;
+    const user = await Login.find({ _id });
+    const updatedUser = {
+      ...user[0]._doc,
+      following: user[0].followers.includes(reqId),
+    };
+    res.status(200).json(updatedUser);
+  } catch (error) {
+    res.status(500).json({ message: "Error getting all users" });
+  }
+});
+
+app.post("/follow", async (req, res) => {
+  try {
+    const { _id, reqId, followStatus } = req.body;
+    if (followStatus) {
+      await Login.updateOne({ _id }, { $pull: { followers: reqId } });
+      await Login.updateOne({ _id: reqId }, { $pull: { following: _id } });
+    } else {
+      await Login.updateOne({ _id }, { $push: { followers: reqId } });
+      await Login.updateOne({ _id: reqId }, { $push: { following: _id } });
+    }
+    res.status(200).json({ message: "Person followed/unfollowed successfully" });
+  } catch (error) {
+    res.status(500).json({ message: "Error followed/unfollowed Person" });
+  }
 });
 
 // Start the server
