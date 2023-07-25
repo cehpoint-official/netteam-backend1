@@ -48,6 +48,7 @@ const loginSchema = new mongoose.Schema({
   userId: String,
   fancyId: String,
   password: String,
+  profilePic: { type: String, default: "" },
   interests: { type: Array, default: [] },
   tokens: { type: Number, default: 5 },
   posts: { type: Array, default: [] },
@@ -151,12 +152,16 @@ app.post("/usersAndUnseenChatsAndLastMessage", async (req, res) => {
     );
 
     // Merge the userName into the chattedUsers result
-    const chattedUsersWithNames = chattedUsers.map((user) => ({
+    const chattedUsersWithNames = chattedUsers.map((user) => {
+      const person = Login.findOne({ _id: user._id });
+      return {
       _id: user._id,
       name: userNameMap.get(user._id.toString()) || "Deleted User",
+      profilePic: person.profilePic,
       unseenCount: user.unseenCount,
       lastMessage: user.lastMessage,
-    }));
+      };
+    });
 
     // console.log(chattedUsersWithNames);
     res.status(200).json(chattedUsersWithNames);
@@ -194,6 +199,7 @@ app.post("/getPostsAndSaved", async (req, res) => {
         return {
           followerId: follower,
           followerName: user.fancyId,
+          followerPic: user.profilePic,
           following: user.followers.includes(reqId),
         };
       })
@@ -205,6 +211,7 @@ app.post("/getPostsAndSaved", async (req, res) => {
         return {
           followingId: follow,
           followingName: user.fancyId,
+          followingPic: user.profilePic,
           following: user.followers.includes(reqId),
         };
       })
@@ -388,6 +395,7 @@ app.post("/reels", async (req, res) => {
     const reelsWithInfo = await Promise.all(
       videos.map(async (video) => {
         const authorName = await getAuthorName(video.author);
+        const profilePic = await getProfilePic(video.author);
         const likedStatus = await isVideoLikedByUser(video._id, userId);
         const likesCount = video.likes.length;
         const commentsCount = video.comments.length;
@@ -397,6 +405,7 @@ app.post("/reels", async (req, res) => {
         return {
           ...video.toObject(),
           authorName,
+          profilePic,
           likedStatus,
           likesCount,
           commentsCount,
@@ -415,6 +424,11 @@ app.post("/reels", async (req, res) => {
 async function getAuthorName(authorId) {
   const login = await Login.findOne({ _id: authorId });
   return login ? login.fancyId : "Unknown";
+}
+
+async function getProfilePic(authorId) {
+  const person = await Login.findById({ _id: authorId });
+  return person ? person.profilePic : null;
 }
 
 async function isVideoLikedByUser(videoId, userId) {
@@ -487,11 +501,13 @@ app.post("/getComments", async (req, res) => {
     const commentsWithInfo = await Promise.all(
       comments.map(async (comment) => {
         const authorName = await getAuthorName(comment.author);
+        const profilePic = await getProfilePic(comment.author);
         const likedStatus = await comment.likes.includes(userId);
         const likesCount = comment.likes.length;
         return {
           ...comment,
           authorName,
+          profilePic,
           likedStatus,
           likesCount,
         };
